@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "187278697686",
+    "project_id": "bid-game-1b17a",
+    "storage_bucket": "bid-game-1b17a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:187278697686:android:81a660cf583b3f7e70d577",
+        "android_client_info": {
+          "package_name": "com.bidgame.bidgames"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBaGzmeX7uDxxge6PF_2wCCBGHxQpxi9Fs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

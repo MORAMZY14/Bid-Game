@@ -1,0 +1,33 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "bid-game-1b17a",
+          "appId": "1:187278697686:android:81a660cf583b3f7e70d577",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "bid-game-1b17a",
+          "configurations": {
+            "android": "1:187278697686:android:81a660cf583b3f7e70d577",
+            "ios": "1:187278697686:ios:43a4b53fa580da6970d577",
+            "macos": "1:187278697686:ios:43a4b53fa580da6970d577",
+            "web": "1:187278697686:web:cb78fdd223d43fd870d577",
+            "windows": "1:187278697686:web:a65ae5806b511b4470d577"
+          }
+        }
+      }
+    }
+  },
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ]
+  }
+}
