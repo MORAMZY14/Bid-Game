@@ -66,17 +66,23 @@ class _GameplayPageState extends State<GameplayPage> {
   int _currentQuestionNumber = 1;
   Map<String, int> _teamScores = {};
   bool _isGameStarted = false;
-  bool _isAnswerRevealed = false;
+  bool _isQuestionVisible = false; // Changed from _isAnswerRevealed
   int _timeLeft = 0;
   Timer? _timer;
+  bool _isTimerRunning = false;
 
   List<Question> _questions = [];
   List<Question> _usedQuestions = [];
   Question? _currentQuestion;
   bool _isLoadingQuestions = true;
 
-  Map<String, bool> _teamPowerUpActive = {};
-  Map<String, bool> _teamPowerUpUsed = {};
+  // Wildcards state for each team
+  Map<String, Map<String, bool>> _teamWildcards = {};
+  Map<String, int> _teamWildcardUses = {};
+
+  // Timer control state
+  int _baseTime = 0;
+  bool _isTimeExtended = false;
 
   @override
   void initState() {
@@ -94,10 +100,12 @@ class _GameplayPageState extends State<GameplayPage> {
   void _initializeGame() {
     for (var team in widget.gameConfig.teams) {
       _teamScores[team.name] = 0;
-      _teamPowerUpActive[team.name] = false;
-      _teamPowerUpUsed[team.name] = false;
+      _teamWildcards[team.name] = {...team.wildcards};
+      _teamWildcardUses[team.name] = 0;
     }
     _timeLeft = widget.gameConfig.timePerQuestion;
+    _baseTime = widget.gameConfig.timePerQuestion;
+    _isQuestionVisible = false; // Start with question hidden
   }
 
   Future<void> _loadQuestions() async {
@@ -230,6 +238,8 @@ class _GameplayPageState extends State<GameplayPage> {
     }
 
     _timer?.cancel();
+    _isTimerRunning = false;
+    _isTimeExtended = false;
 
     if (_currentQuestion != null) {
       _usedQuestions.add(_currentQuestion!);
@@ -240,8 +250,9 @@ class _GameplayPageState extends State<GameplayPage> {
       setState(() {
         _currentQuestion = _questions.first;
         _currentQuestionNumber++;
-        _isAnswerRevealed = false;
+        _isQuestionVisible = false; // Reset question visibility for new question
         _timeLeft = widget.gameConfig.timePerQuestion;
+        _baseTime = widget.gameConfig.timePerQuestion;
         if (_isGameStarted) {
           _startTimer();
         }
@@ -253,6 +264,7 @@ class _GameplayPageState extends State<GameplayPage> {
 
   void _startTimer() {
     _timer?.cancel();
+    _isTimerRunning = true;
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_timeLeft > 0) {
         setState(() {
@@ -260,17 +272,236 @@ class _GameplayPageState extends State<GameplayPage> {
         });
       } else {
         timer.cancel();
-        if (!_isAnswerRevealed) {
-          _revealAnswer();
+        _isTimerRunning = false;
+        // When time runs out, automatically show the question
+        if (!_isQuestionVisible) {
+          _toggleQuestionVisibility();
         }
       }
     });
   }
 
-  void _revealAnswer() {
+  void _pauseTimer() {
+    _timer?.cancel();
+    _isTimerRunning = false;
+  }
+
+  void _resumeTimer() {
+    if (!_isTimerRunning && _timeLeft > 0) {
+      _startTimer();
+    }
+  }
+
+  void _resetTimer() {
+    _timer?.cancel();
+    _isTimerRunning = false;
     setState(() {
-      _isAnswerRevealed = true;
-      _timer?.cancel();
+      _timeLeft = _baseTime;
+    });
+  }
+
+  void _addExtraTime(int seconds) {
+    setState(() {
+      _timeLeft += seconds;
+      _isTimeExtended = true;
+    });
+  }
+
+  void _useUnlimitedTime(String teamName) {
+    if (_teamWildcards[teamName]?['Unlimited Time'] == true &&
+        (_teamWildcardUses[teamName] ?? 0) < 1) {
+      setState(() {
+        _timer?.cancel();
+        _isTimerRunning = false;
+        _teamWildcards[teamName]?['Unlimited Time'] = false;
+        _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+      });
+      _showSuccess('$teamName used Unlimited Time! Timer stopped.');
+    }
+  }
+
+  void _useExtraTime(String teamName) {
+    if (_teamWildcards[teamName]?['Extra Time'] == true &&
+        (_teamWildcardUses[teamName] ?? 0) < 1) {
+      setState(() {
+        _addExtraTime(20);
+        _teamWildcards[teamName]?['Extra Time'] = false;
+        _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+      });
+      _showSuccess('$teamName used Extra Time! +20 seconds added.');
+    }
+  }
+
+  void _useTheif(String teamName) {
+    if (_teamWildcards[teamName]?['Theif'] == true &&
+        (_teamWildcardUses[teamName] ?? 0) < 1) {
+      _showTheifDialog(teamName);
+    }
+  }
+
+  void _usePlusMinus(String teamName) {
+    if (_teamWildcards[teamName]?['Plus Minus'] == true &&
+        (_teamWildcardUses[teamName] ?? 0) < 1) {
+      _showPlusMinusDialog(teamName);
+    }
+  }
+
+  void _useTables(String teamName) {
+    if (_teamWildcards[teamName]?['Tables'] == true &&
+        (_teamWildcardUses[teamName] ?? 0) < 1) {
+      _showTablesDialog(teamName);
+    }
+  }
+
+  void _showTheifDialog(String teamName) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF5A009D),
+        title: const Text('Theif Wildcard', style: TextStyle(color: Colors.yellow)),
+        content: Text('$teamName can steal minimum 20 points from another team',
+            style: const TextStyle(color: Colors.white)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _teamWildcards[teamName]?['Theif'] = false;
+              _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+              _showStealPointsDialog(teamName);
+            },
+            child: const Text('Use', style: TextStyle(color: Colors.black)),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.yellow),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showStealPointsDialog(String stealingTeam) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF5A009D),
+        title: const Text('Steal Points', style: TextStyle(color: Colors.yellow)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Select team to steal from:', style: TextStyle(color: Colors.white)),
+            const SizedBox(height: 10),
+            ...widget.gameConfig.teams
+                .where((team) => team.name != stealingTeam)
+                .map((team) => ListTile(
+              title: Text(team.name, style: const TextStyle(color: Colors.white)),
+              trailing: Text('${_teamScores[team.name] ?? 0}',
+                  style: const TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _stealPoints(stealingTeam, team.name);
+              },
+            )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _stealPoints(String stealingTeam, String targetTeam) {
+    final int targetScore = _teamScores[targetTeam] ?? 0;
+    if (targetScore >= 20) {
+      setState(() {
+        _teamScores[stealingTeam] = (_teamScores[stealingTeam] ?? 0) + 20;
+        _teamScores[targetTeam] = targetScore - 20;
+      });
+      _showSuccess('$stealingTeam stole 20 points from $targetTeam');
+    } else {
+      _showError('$targetTeam has less than 20 points to steal');
+    }
+  }
+
+  void _showPlusMinusDialog(String teamName) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF5A009D),
+        title: const Text('Plus/Minus Wildcard', style: TextStyle(color: Colors.yellow)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Add or subtract points from any team:',
+                style: TextStyle(color: Colors.white)),
+            const SizedBox(height: 10),
+            ...widget.gameConfig.teams.map((team) => Row(
+              children: [
+                Expanded(
+                  child: Text(team.name, style: const TextStyle(color: Colors.white)),
+                ),
+                IconButton(
+                  onPressed: () => _adjustPoints(team.name, 10),
+                  icon: const Icon(Icons.add, color: Colors.green),
+                ),
+                IconButton(
+                  onPressed: () => _adjustPoints(team.name, -10),
+                  icon: const Icon(Icons.remove, color: Colors.red),
+                ),
+              ],
+            )),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _teamWildcards[teamName]?['Plus Minus'] = false;
+              _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+            },
+            child: const Text('Done', style: TextStyle(color: Colors.yellow)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _adjustPoints(String teamName, int points) {
+    setState(() {
+      _teamScores[teamName] = (_teamScores[teamName] ?? 0) + points;
+    });
+  }
+
+  void _showTablesDialog(String teamName) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF5A009D),
+        title: const Text('Tables Wildcard', style: TextStyle(color: Colors.yellow)),
+        content: const Text('Special table-based questions activated!',
+            style: TextStyle(color: Colors.white)),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _teamWildcards[teamName]?['Tables'] = false;
+              _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+              _showSuccess('$teamName activated Tables wildcard!');
+            },
+            child: const Text('OK', style: TextStyle(color: Colors.yellow)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toggleQuestionVisibility() {
+    setState(() {
+      _isQuestionVisible = !_isQuestionVisible;
+      if (_isQuestionVisible) {
+        _pauseTimer(); // Pause timer when question is revealed
+      } else {
+        _resumeTimer(); // Resume timer when question is hidden
+      }
     });
   }
 
@@ -280,11 +511,6 @@ class _GameplayPageState extends State<GameplayPage> {
 
     int points = currentQuestion.points;
 
-    if (_teamPowerUpActive[teamName] == true) {
-      points *= 2;
-      _teamPowerUpActive[teamName] = false;
-    }
-
     setState(() {
       if (isCorrect) {
         _teamScores[teamName] = (_teamScores[teamName] ?? 0) + points;
@@ -292,16 +518,6 @@ class _GameplayPageState extends State<GameplayPage> {
         _teamScores[teamName] = (_teamScores[teamName] ?? 0) - (points ~/ 2);
       }
     });
-  }
-
-  void _usePowerUp(String teamName) {
-    if (_teamPowerUpUsed[teamName] == false) {
-      setState(() {
-        _teamPowerUpActive[teamName] = true;
-        _teamPowerUpUsed[teamName] = true;
-      });
-      _showSuccess('$teamName activated 2X power-up!');
-    }
   }
 
   void _startGame() {
@@ -318,6 +534,7 @@ class _GameplayPageState extends State<GameplayPage> {
 
   void _endGame() {
     _timer?.cancel();
+    _isTimerRunning = false;
 
     String? winningTeam;
     int highestScore = -999999;
@@ -419,6 +636,50 @@ class _GameplayPageState extends State<GameplayPage> {
     }
   }
 
+  Widget _buildWildcardButton(String teamName, String wildcardName, IconData icon, Function() onPressed) {
+    final hasWildcard = _teamWildcards[teamName]?[wildcardName] == true;
+    final usesLeft = 1 - (_teamWildcardUses[teamName] ?? 0);
+
+    return Tooltip(
+      message: '$wildcardName\nUses left: $usesLeft',
+      child: GestureDetector(
+        onTap: hasWildcard && usesLeft > 0 ? onPressed : null,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: hasWildcard && usesLeft > 0
+                ? Colors.yellow.withOpacity(0.2)
+                : Colors.grey.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: hasWildcard && usesLeft > 0
+                  ? Colors.yellow
+                  : Colors.grey.withOpacity(0.3),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon,
+                  color: hasWildcard && usesLeft > 0 ? Colors.yellow : Colors.grey,
+                  size: 16),
+              const SizedBox(height: 2),
+              Text(
+                wildcardName.split(' ').first,
+                style: TextStyle(
+                  color: hasWildcard && usesLeft > 0 ? Colors.yellow : Colors.grey,
+                  fontSize: 8,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final teamColors = [
@@ -448,470 +709,486 @@ class _GameplayPageState extends State<GameplayPage> {
           ),
         ),
         child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final isLargeScreen = constraints.maxWidth > 1000;
-              final isMediumScreen = constraints.maxWidth > 600;
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header
+                Row(
+                  children: [
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.white.withOpacity(0.1),
+                        padding: const EdgeInsets.all(8),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Text(
+                      'Gameplay',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.white.withOpacity(0.2)),
+                      ),
+                      child: Text(
+                        '$_currentQuestionNumber/${widget.gameConfig.numberOfRounds}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
 
-              return SingleChildScrollView(
-                child: Container(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: isLargeScreen
-                        ? constraints.maxWidth * 0.1
-                        : isMediumScreen
-                        ? 32.0
-                        : 16.0,
-                    vertical: 20,
+                // Timer and Game Info Card
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.1)),
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Referee: ${widget.gameConfig.refereeName}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                if (_currentQuestion != null)
+                                  Wrap(
+                                    spacing: 8,
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue.withOpacity(0.2),
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Text(
+                                          _currentQuestion!.category,
+                                          style: const TextStyle(
+                                            color: Colors.blue,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: _getDifficultyColor(_currentQuestion!.difficulty).withOpacity(0.2),
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Text(
+                                          _currentQuestion!.difficulty,
+                                          style: TextStyle(
+                                            color: _getDifficultyColor(_currentQuestion!.difficulty),
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          // Timer Section
+                          Column(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: _timeLeft > 10
+                                        ? [Colors.green, Colors.lightGreen]
+                                        : _timeLeft > 5
+                                        ? [Colors.orange, Colors.yellow]
+                                        : [Colors.red, Colors.orange],
+                                  ),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  '$_timeLeft',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 32,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              if (_isGameStarted)
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    IconButton(
+                                      onPressed: _isTimerRunning ? _pauseTimer : _resumeTimer,
+                                      icon: Icon(
+                                        _isTimerRunning ? Icons.pause : Icons.play_arrow,
+                                        color: Colors.white,
+                                        size: 20,
+                                      ),
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: Colors.white.withOpacity(0.1),
+                                        padding: const EdgeInsets.all(6),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    IconButton(
+                                      onPressed: _resetTimer,
+                                      icon: const Icon(Icons.refresh, color: Colors.white, size: 20),
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: Colors.white.withOpacity(0.1),
+                                        padding: const EdgeInsets.all(6),
+                                      ),
+                                    ),
+                                    if (_isTimeExtended)
+                                      const SizedBox(width: 8),
+                                    if (_isTimeExtended)
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: Colors.green.withOpacity(0.2),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: const Text(
+                                          '+20s',
+                                          style: TextStyle(
+                                            color: Colors.green,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      // Quick Stats
+                      Row(
+                        children: [
+                          _buildStatItem(Icons.timer, 'Time', '${widget.gameConfig.timePerQuestion}s'),
+                          const SizedBox(width: 12),
+                          _buildStatItem(Icons.score, 'Points', '${widget.gameConfig.pointsPerCorrectAnswer}'),
+                          const SizedBox(width: 12),
+                          _buildStatItem(Icons.groups, 'Teams', '${widget.gameConfig.teams.length}'),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // Question Card
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.1)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
                         children: [
-                          GestureDetector(
-                            onTap: () => Navigator.pop(context),
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: const Icon(
-                                Icons.arrow_back,
-                                color: Colors.white,
-                                size: 24,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 20),
-                          const Text(
-                            'Gameplay',
-                            style: TextStyle(
+                          const Icon(Icons.question_answer, color: Colors.yellow, size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Question $_currentQuestionNumber',
+                            style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 28,
+                              fontSize: 18,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
                           const Spacer(),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: Colors.white.withOpacity(0.3)),
+                          if (_currentQuestion != null)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.yellow.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                '${_currentQuestion!.points} pts',
+                                style: const TextStyle(
+                                  color: Colors.yellow,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                             ),
-                            child: Text(
-                              'Question $_currentQuestionNumber/${widget.gameConfig.numberOfRounds}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      if (_isLoadingQuestions)
+                        const Center(
+                          child: CircularProgressIndicator(color: Colors.yellow),
+                        )
+                      else if (_currentQuestion == null)
+                        Center(
+                          child: Column(
+                            children: [
+                              const Icon(Icons.error_outline, color: Colors.red, size: 32),
+                              const SizedBox(height: 12),
+                              const Text(
+                                'No questions available',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Please add questions to the database',
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.6),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else ...[
+                          // Question Display with Reveal/Hide functionality
+                          GestureDetector(
+                            onTap: _isGameStarted ? _toggleQuestionVisibility : null,
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: _isQuestionVisible
+                                      ? Colors.yellow.withOpacity(0.3)
+                                      : Colors.transparent,
+                                  width: 2,
+                                ),
+                              ),
+                              child: Column(
+                                children: [
+                                  if (!_isQuestionVisible)
+                                    Container(
+                                      padding: const EdgeInsets.all(20),
+                                      decoration: BoxDecoration(
+                                        color: Colors.purple.withOpacity(0.1),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          const Icon(Icons.visibility_off, color: Colors.yellow, size: 24),
+                                          const SizedBox(width: 12),
+                                          const Text(
+                                            'Question Hidden',
+                                            style: TextStyle(
+                                              color: Colors.yellow,
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    )
+                                  else
+                                    Text(
+                                      _currentQuestion!.text,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w600,
+                                        height: 1.4,
+                                      ),
+                                    ),
+                                  if (_isGameStarted)
+                                    const SizedBox(height: 12),
+                                  if (_isGameStarted)
+                                    Text(
+                                      _isQuestionVisible
+                                          ? 'Tap to hide question'
+                                          : 'Tap to reveal question',
+                                      style: TextStyle(
+                                        color: Colors.yellow,
+                                        fontSize: 12,
+                                        fontStyle: FontStyle.italic,
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
                           ),
                         ],
-                      ),
-                      const SizedBox(height: 30),
-
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white.withOpacity(0.2)),
-                        ),
-                        child: Column(
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'Referee: ${widget.gameConfig.refereeName}',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    if (_currentQuestion != null)
-                                      Text(
-                                        '${_currentQuestion!.category} • ${_currentQuestion!.difficulty} • ${_currentQuestion!.points} points',
-                                        style: TextStyle(
-                                          color: Colors.white.withOpacity(0.8),
-                                          fontSize: 14,
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      colors: _timeLeft > 10
-                                          ? [Colors.green, Colors.lightGreen]
-                                          : _timeLeft > 5
-                                          ? [Colors.orange, Colors.yellow]
-                                          : [Colors.red, Colors.orange],
-                                    ),
-                                    borderRadius: BorderRadius.circular(30),
-                                  ),
-                                  child: Text(
-                                    '$_timeLeft',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 24,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ],
+                      if (_isGameStarted && !_isQuestionVisible && _currentQuestion != null)
+                        const SizedBox(height: 16),
+                      if (_isGameStarted && !_isQuestionVisible && _currentQuestion != null)
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.purple.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Text(
+                            'Question is hidden. Tap the box above to reveal it.',
+                            style: TextStyle(
+                              color: Colors.yellow,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
                             ),
-                            const SizedBox(height: 20),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.05),
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: Colors.white.withOpacity(0.1)),
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        const Icon(Icons.timer, color: Colors.yellow, size: 20),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          'Time per question',
-                                          style: TextStyle(
-                                            color: Colors.white.withOpacity(0.6),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${widget.gameConfig.timePerQuestion}s',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 20),
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.05),
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: Colors.white.withOpacity(0.1)),
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        const Icon(Icons.score, color: Colors.yellow, size: 20),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          'Points per answer',
-                                          style: TextStyle(
-                                            color: Colors.white.withOpacity(0.6),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${widget.gameConfig.pointsPerCorrectAnswer}',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 20),
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.05),
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: Colors.white.withOpacity(0.1)),
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        const Icon(Icons.groups, color: Colors.yellow, size: 20),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          'Teams',
-                                          style: TextStyle(
-                                            color: Colors.white.withOpacity(0.6),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${widget.gameConfig.teams.length}',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 30),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
 
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white.withOpacity(0.2)),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Icon(Icons.question_answer, color: Colors.yellow, size: 24),
-                                const SizedBox(width: 12),
-                                Text(
-                                  'Question $_currentQuestionNumber',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                if (_currentQuestion != null) ...[
-                                  const Spacer(),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: _getDifficultyColor(_currentQuestion!.difficulty),
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: Text(
-                                      _currentQuestion!.difficulty,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.blue.withOpacity(0.3),
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(color: Colors.blue),
-                                    ),
-                                    child: Text(
-                                      '${_currentQuestion!.points} pts',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                // Teams Scores Section
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.1)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.leaderboard, color: Colors.yellow, size: 20),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'Team Scores',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (widget.gameConfig.enableWildcards)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.yellow.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Row(
+                                children: [
+                                  Icon(Icons.card_giftcard, color: Colors.yellow, size: 12),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'WILDCARDS',
+                                    style: TextStyle(
+                                      color: Colors.yellow,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
                                 ],
-                              ],
+                              ),
                             ),
-                            const SizedBox(height: 20),
-                            if (_isLoadingQuestions)
-                              const Center(
-                                child: CircularProgressIndicator(color: Colors.yellow),
-                              )
-                            else if (_currentQuestion == null)
-                              Center(
-                                child: Column(
-                                  children: [
-                                    const Icon(Icons.error_outline, color: Colors.red, size: 48),
-                                    const SizedBox(height: 16),
-                                    const Text(
-                                      'No questions available',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      ...widget.gameConfig.teams.map((team) {
+                        final index = widget.gameConfig.teams.indexOf(team);
+                        final score = _teamScores[team.name] ?? 0;
+                        final color = teamColors[index % teamColors.length];
+                        final wildcards = _teamWildcards[team.name] ?? {};
+                        final usesLeft = 1 - (_teamWildcardUses[team.name] ?? 0);
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: color.withOpacity(0.2)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 32,
+                                    height: 32,
+                                    decoration: BoxDecoration(
+                                      color: color.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(8),
                                     ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      'Please add questions to the database',
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      '${index + 1}',
                                       style: TextStyle(
-                                        color: Colors.white.withOpacity(0.6),
+                                        color: color,
+                                        fontWeight: FontWeight.bold,
                                         fontSize: 14,
                                       ),
                                     ),
-                                  ],
-                                ),
-                              )
-                            else ...[
-                                Container(
-                                  padding: const EdgeInsets.all(20),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.05),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: Colors.white.withOpacity(0.2)),
                                   ),
-                                  child: Text(
-                                    _currentQuestion!.text,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.w600,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 20),
-                                Container(
-                                  padding: const EdgeInsets.all(16),
-                                  decoration: BoxDecoration(
-                                    color: Colors.purple.withOpacity(0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: Colors.purple),
-                                  ),
-                                  child: const Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Referee Instructions:',
-                                        style: TextStyle(
-                                          color: Colors.yellow,
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      SizedBox(height: 10),
-                                      Text(
-                                        '1. Read the question aloud\n'
-                                            '2. Teams will provide answers verbally\n'
-                                            '3. Select teams that answered correctly\n'
-                                            '4. Award points accordingly',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 14,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 30),
-
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white.withOpacity(0.2)),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Icon(Icons.leaderboard, color: Colors.yellow, size: 24),
-                                const SizedBox(width: 12),
-                                const Text(
-                                  'Team Scores',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                const Spacer(),
-                                if (widget.gameConfig.enablePowerUps)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.purple.withOpacity(0.3),
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(color: Colors.purple),
-                                    ),
-                                    child: const Row(
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Icon(Icons.bolt, color: Colors.yellow, size: 12),
-                                        SizedBox(width: 4),
                                         Text(
-                                          '2X POWER-UPS',
+                                          team.name,
                                           style: TextStyle(
-                                            color: Colors.white,
+                                            color: color,
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        Text(
+                                          '${team.players.where((p) => p.isNotEmpty).length} players',
+                                          style: TextStyle(
+                                            color: Colors.white.withOpacity(0.6),
                                             fontSize: 10,
-                                            fontWeight: FontWeight.w600,
                                           ),
                                         ),
                                       ],
                                     ),
                                   ),
-                              ],
-                            ),
-                            const SizedBox(height: 20),
-                            GridView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: isLargeScreen ? 4 : 2,
-                                crossAxisSpacing: 12,
-                                mainAxisSpacing: 12,
-                                childAspectRatio: 1.5,
-                              ),
-                              itemCount: widget.gameConfig.teams.length,
-                              itemBuilder: (context, index) {
-                                final team = widget.gameConfig.teams[index];
-                                final score = _teamScores[team.name] ?? 0;
-                                final color = teamColors[index % teamColors.length];
-                                final powerUpUsed = _teamPowerUpUsed[team.name] ?? false;
-                                final powerUpActive = _teamPowerUpActive[team.name] ?? false;
-                                return Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.05),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: color.withOpacity(0.3)),
-                                  ),
-                                  child: Column(
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
                                     children: [
-                                      Text(
-                                        team.name,
-                                        style: TextStyle(
-                                          color: color,
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      const SizedBox(height: 8),
                                       Text(
                                         '$score',
                                         style: const TextStyle(
@@ -920,7 +1197,6 @@ class _GameplayPageState extends State<GameplayPage> {
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
-                                      const SizedBox(height: 4),
                                       Text(
                                         'points',
                                         style: TextStyle(
@@ -928,355 +1204,225 @@ class _GameplayPageState extends State<GameplayPage> {
                                           fontSize: 10,
                                         ),
                                       ),
-                                      const SizedBox(height: 8),
-                                      if (widget.gameConfig.enablePowerUps)
-                                        GestureDetector(
-                                          onTap: powerUpUsed ? null : () => _usePowerUp(team.name),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                            decoration: BoxDecoration(
-                                              color: powerUpActive
-                                                  ? Colors.yellow.withOpacity(0.2)
-                                                  : powerUpUsed
-                                                  ? Colors.grey.withOpacity(0.2)
-                                                  : color.withOpacity(0.2),
-                                              borderRadius: BorderRadius.circular(8),
-                                              border: Border.all(
-                                                color: powerUpActive
-                                                    ? Colors.yellow
-                                                    : powerUpUsed
-                                                    ? Colors.grey
-                                                    : color,
-                                              ),
-                                            ),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  powerUpActive ? Icons.bolt : powerUpUsed ? Icons.bolt_outlined : Icons.bolt,
-                                                  color: powerUpActive ? Colors.yellow : powerUpUsed ? Colors.grey : color,
-                                                  size: 12,
-                                                ),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  powerUpActive ? 'ACTIVE' : powerUpUsed ? 'USED' : '2X',
-                                                  style: TextStyle(
-                                                    color: powerUpActive ? Colors.yellow : powerUpUsed ? Colors.grey : color,
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
                                     ],
                                   ),
-                                );
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 30),
-
-                      if (!_isGameStarted)
-                        Center(
-                          child: GestureDetector(
-                            onTap: _startGame,
-                            child: Container(
-                              height: 60,
-                              width: 250,
-                              decoration: BoxDecoration(
-                                gradient: const LinearGradient(
-                                  colors: [Color(0xFFFFC300), Color(0xFFFF8A00)],
-                                ),
-                                borderRadius: BorderRadius.circular(16),
+                                ],
                               ),
-                              child: const Center(
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
+                              if (widget.gameConfig.enableWildcards && usesLeft > 0)
+                                const SizedBox(height: 12),
+                              if (widget.gameConfig.enableWildcards && usesLeft > 0)
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceAround,
                                   children: [
-                                    Icon(Icons.play_arrow_rounded, color: Colors.white, size: 28),
-                                    SizedBox(width: 12),
-                                    Text(
-                                      'START GAME',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
+                                    _buildWildcardButton(team.name, 'Unlimited Time', Icons.timer_off,
+                                            () => _useUnlimitedTime(team.name)),
+                                    _buildWildcardButton(team.name, 'Extra Time', Icons.timer,
+                                            () => _useExtraTime(team.name)),
+                                    _buildWildcardButton(team.name, 'Theif', Icons.attach_money,
+                                            () => _useTheif(team.name)),
+                                    _buildWildcardButton(team.name, 'Plus Minus', Icons.add_circle_outline,
+                                            () => _usePlusMinus(team.name)),
+                                    _buildWildcardButton(team.name, 'Tables', Icons.table_chart,
+                                            () => _useTables(team.name)),
                                   ],
                                 ),
-                              ),
-                            ),
-                          ),
-                        ),
-
-                      if (_isGameStarted) ...[
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () {
-                                  if (!_isAnswerRevealed) _revealAnswer();
-                                },
-                                child: Container(
-                                  height: 60,
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.1),
-                                    borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(color: Colors.white.withOpacity(0.3)),
-                                  ),
-                                  child: Center(
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          _isAnswerRevealed ? Icons.visibility : Icons.visibility_off,
-                                          color: Colors.white,
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Text(
-                                          _isAnswerRevealed ? 'Answer Revealed' : 'Reveal Answer',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 20),
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () {
-                                  if (_currentQuestionNumber < widget.gameConfig.numberOfRounds) {
-                                    _getNextRandomQuestion();
-                                  } else {
-                                    _endGame();
-                                  }
-                                },
-                                child: Container(
-                                  height: 60,
-                                  decoration: BoxDecoration(
-                                    gradient: const LinearGradient(
-                                      colors: [Colors.green, Colors.lightGreen],
-                                    ),
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  child: Center(
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          _currentQuestionNumber < widget.gameConfig.numberOfRounds
-                                              ? Icons.skip_next
-                                              : Icons.flag,
-                                          color: Colors.white,
-                                          size: 24,
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Text(
-                                          _currentQuestionNumber < widget.gameConfig.numberOfRounds
-                                              ? 'Next Question'
-                                              : 'Finish Game',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 20),
-
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(20),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.05),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: Colors.white.withOpacity(0.2)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Award Points',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              const Text(
-                                'Select teams that answered correctly:',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              const SizedBox(height: 16),
-                              GridView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: isLargeScreen ? 4 : 2,
-                                  crossAxisSpacing: 12,
-                                  mainAxisSpacing: 12,
-                                  childAspectRatio: 3,
-                                ),
-                                itemCount: widget.gameConfig.teams.length,
-                                itemBuilder: (context, index) {
-                                  final team = widget.gameConfig.teams[index];
-                                  final color = teamColors[index % teamColors.length];
-                                  return Row(
-                                    children: [
-                                      Expanded(
-                                        child: GestureDetector(
-                                          onTap: () {
-                                            _awardPoints(team.name, true);
-                                          },
-                                          child: Container(
-                                            padding: const EdgeInsets.all(12),
-                                            decoration: BoxDecoration(
-                                              color: Colors.green.withOpacity(0.2),
-                                              borderRadius: BorderRadius.circular(12),
-                                              border: Border.all(color: Colors.green),
-                                            ),
-                                            child: Center(
-                                              child: Row(
-                                                mainAxisAlignment: MainAxisAlignment.center,
-                                                children: [
-                                                  const Icon(Icons.check_circle, color: Colors.green, size: 20),
-                                                  const SizedBox(width: 8),
-                                                  Text(
-                                                    '${team.name} ✓',
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 14,
-                                                      fontWeight: FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      GestureDetector(
-                                        onTap: () {
-                                          _awardPoints(team.name, false);
-                                        },
-                                        child: Container(
-                                          padding: const EdgeInsets.all(12),
-                                          decoration: BoxDecoration(
-                                            color: Colors.red.withOpacity(0.2),
-                                            borderRadius: BorderRadius.circular(12),
-                                            border: Border.all(color: Colors.red),
-                                          ),
-                                          child: const Icon(Icons.cancel, color: Colors.red, size: 20),
-                                        ),
-                                      ),
-                                    ],
-                                  );
-                                },
-                              ),
-                              const SizedBox(height: 16),
-                              GestureDetector(
-                                onTap: () {
-                                  if (_currentQuestionNumber < widget.gameConfig.numberOfRounds) {
-                                    _getNextRandomQuestion();
-                                  } else {
-                                    _endGame();
-                                  }
-                                },
-                                child: Container(
-                                  width: double.infinity,
-                                  padding: const EdgeInsets.all(16),
-                                  decoration: BoxDecoration(
-                                    color: Colors.blue.withOpacity(0.2),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: Colors.blue),
-                                  ),
-                                  child: const Center(
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.arrow_forward, color: Colors.blue),
-                                        SizedBox(width: 8),
-                                        Text(
-                                          'Continue to Next Question',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
                             ],
                           ),
-                        ),
-                        const SizedBox(height: 20),
-
-                        Center(
-                          child: GestureDetector(
-                            onTap: _endGame,
-                            child: Container(
-                              height: 50,
-                              width: 200,
-                              decoration: BoxDecoration(
-                                color: Colors.red.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: Colors.red),
-                              ),
-                              child: const Center(
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.flag, color: Colors.red, size: 20),
-                                    SizedBox(width: 10),
-                                    Text(
-                                      'End Game Now',
-                                      style: TextStyle(
-                                        color: Colors.red,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 40),
+                        );
+                      }),
                     ],
                   ),
                 ),
-              );
-            },
+                const SizedBox(height: 20),
+
+                // Game Control Buttons
+                if (!_isGameStarted)
+                  Center(
+                    child: ElevatedButton.icon(
+                      onPressed: _startGame,
+                      icon: const Icon(Icons.play_arrow, size: 24),
+                      label: const Text('START GAME', style: TextStyle(fontWeight: FontWeight.w800)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.yellow,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+
+                if (_isGameStarted) ...[
+                  // Answer Control
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white.withOpacity(0.1)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Award Points',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        ...widget.gameConfig.teams.map((team) {
+                          final index = widget.gameConfig.teams.indexOf(team);
+                          final color = teamColors[index % teamColors.length];
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    team.name,
+                                    style: TextStyle(color: color, fontSize: 14),
+                                  ),
+                                ),
+                                Row(
+                                  children: [
+                                    IconButton(
+                                      onPressed: () => _awardPoints(team.name, true),
+                                      icon: const Icon(Icons.check, color: Colors.green),
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: Colors.green.withOpacity(0.1),
+                                        padding: const EdgeInsets.all(8),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    IconButton(
+                                      onPressed: () => _awardPoints(team.name, false),
+                                      icon: const Icon(Icons.close, color: Colors.red),
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: Colors.red.withOpacity(0.1),
+                                        padding: const EdgeInsets.all(8),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Navigation Buttons (Removed Reveal Answer button)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _toggleQuestionVisibility,
+                          icon: Icon(
+                            _isQuestionVisible ? Icons.visibility_off : Icons.visibility,
+                            size: 20,
+                          ),
+                          label: Text(_isQuestionVisible ? 'Hide Question' : 'Show Question'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: BorderSide(color: Colors.white.withOpacity(0.3)),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            if (_currentQuestionNumber < widget.gameConfig.numberOfRounds) {
+                              _getNextRandomQuestion();
+                            } else {
+                              _endGame();
+                            }
+                          },
+                          icon: Icon(
+                            _currentQuestionNumber < widget.gameConfig.numberOfRounds
+                                ? Icons.skip_next
+                                : Icons.flag,
+                            size: 20,
+                          ),
+                          label: Text(
+                            _currentQuestionNumber < widget.gameConfig.numberOfRounds
+                                ? 'Next Question'
+                                : 'Finish Game',
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // End Game Button
+                  Center(
+                    child: OutlinedButton.icon(
+                      onPressed: _endGame,
+                      icon: const Icon(Icons.flag, size: 16),
+                      label: const Text('End Game Now'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red,
+                        side: const BorderSide(color: Colors.red),
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 40),
+              ],
+            ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatItem(IconData icon, String label, String value) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: Colors.white70, size: 16),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.6),
+                fontSize: 10,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              value,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
         ),
       ),
     );
