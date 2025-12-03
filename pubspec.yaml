@@ -32,7 +32,6 @@ dependencies:
   mailer: ^6.1.2
   twilio_flutter: ^0.9.0
   onesignal_flutter: ^5.2.4
-  libphonenumber_plugin: ^0.3.3
   flutter_contacts: ^1.1.9+2
   google_fonts: ^4.0.3
   window_manager: ^0.3.3
@@ -72,5 +71,6 @@ flutter_native_splash:
 
 flutter:
   uses-material-design: true
+
 
 
