@@ -71,7 +71,7 @@ jobs:
         working-directory: build/ios/iphoneos
 
       - name: Zip IPA
-        run: zip -qq -r -9 Etqan.ipa Payload
+        run: zip -qq -r -9 Bid-Game.ipa Payload
         working-directory: build/ios/iphoneos
 
       - name: Upload IPA to Release
