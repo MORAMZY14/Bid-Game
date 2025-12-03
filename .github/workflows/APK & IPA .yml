@@ -1,107 +1,84 @@
-name: Build & Release
+name: Build APK & IPA
 
 on:
-  pull_request:
-    branches:
-      - main
-      - master
-  push:
-    branches:
-      - main
-      - master
-      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: write   # REQUIRED for creating releases
 
 jobs:
-  build:
-    name: Build & Release
-    runs-on: macos-latest
+  build-apk:
+    name: 🤖 Android APK Build
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Set execute permissions for gradlew
-        run: chmod +x android/gradlew
-
-      - name: Clean up build directory to save space
-        run: rm -rf build
-
-      - name: Set up Java
-        uses: actions/setup-java@v3
-        with:
-          java-version: '17.x'
-          distribution: 'temurin'
-
-      - name: Set up Flutter
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          channel: stable
 
-      - name: Cache Flutter and Gradle dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.pub-cache
-            ~/.gradle/caches
-          key: ${{ runner.os }}-flutter-${{ hashFiles('**/pubspec.yaml') }}-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-flutter-
-
-      - name: Install dependencies
+      - name: Flutter Pub Get
         run: flutter pub get
 
-      - name: Clean project with Gradle
-        run: cd android && ./gradlew clean
-        shell: bash
-
       - name: Build APK
-        run: |
-          cd android
-          ./gradlew assembleRelease
-          if [ ! -f build/app/outputs/flutter-apk/app-release.apk ]; then
-            echo "APK not found!"
-            exit 1
-          fi
-        shell: bash
+        run: flutter build apk --release
 
-      - name: List APK Directory
-        run: ls -R build/app/outputs/flutter-apk
+      - name: Upload APK to Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/app/outputs/flutter-apk/app-release.apk
+          tag: v2.0
+          overwrite: true
+          body: "Android + iOS Build Release"
 
-      - name: Check if iOS Directory Exists
-        run: |
-          if [ ! -d "ios" ]; then
-            echo "iOS directory not found!"
-            exit 1
-          fi
+  build-ios:
+    name: 🍎 iOS IPA Build
+    runs-on: macos-latest
+    needs: build-apk     # Run AFTER APK build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0   # REQUIRED for tags and releases
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          architecture: x64
+
+      - name: Flutter Pub Get
+        run: flutter pub get
 
       - name: Update CocoaPods
-        run: |
-          cd ios
-          pod repo update
-          pod install
-        shell: bash
+        run: pod repo update
+        working-directory: ios
 
-      - name: Build iOS App
-        run: |
-          flutter build ios --release --no-codesign
-          cd build/ios/iphoneos
-          zip -r Etqan.ipa Runner.app
+      - name: Build iOS (no codesign)
+        run: flutter build ios --release --no-codesign
 
-      - name: Check if APK and IPA exist
-        run: |
-          if [ ! -f build/app/outputs/flutter-apk/app-release.apk ]; then
-            echo "APK not found!"
-            exit 1
-          fi
-          if [ ! -f build/ios/iphoneos/Etqan.ipa ]; then
-            echo "IPA not found!"
-            exit 1
-          fi
-        shell: bash
+      - name: Create Payload folder
+        run: mkdir Payload
+        working-directory: build/ios/iphoneos
 
-      - name: Push to Releases
-        uses: ncipollo/release-action@v1
+      - name: Move app into Payload
+        run: mv Runner.app Payload
+        working-directory: build/ios/iphoneos
+
+      - name: Zip IPA
+        run: zip -qq -r -9 Etqan.ipa Payload
+        working-directory: build/ios/iphoneos
+
+      - name: Upload IPA to Release
+        uses: svenstaro/upload-release-action@v2
         with:
-          artifacts: "build/app/outputs/flutter-apk/app-release.apk,build/ios/iphoneos/Etqan.ipa"
-          tag: v1.0.${{ github.run_number }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/ios/iphoneos/Etqan.ipa
+          tag: v2.0
+          overwrite: true
+          body: "Android + iOS Build Release"
