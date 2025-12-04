@@ -78,7 +78,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: build/ios/iphoneos/Etqan.ipa
+          file: build/ios/iphoneos/Bid-Game.ipa
           tag: v2.0
           overwrite: true
           body: "Android + iOS Build Release"
