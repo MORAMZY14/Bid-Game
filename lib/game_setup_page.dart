@@ -80,8 +80,8 @@ class GameConfig {
     return GameConfig(
       refereeName: map['refereeName'] ?? '',
       timePerQuestion: map['timePerQuestion'] ?? 30,
-      numberOfRounds: map['numberOfRounds'] ?? 3,
-      pointsPerCorrectAnswer: map['pointsPerCorrectAnswer'] ?? 10,
+      numberOfRounds: map['numberOfRounds'] ?? 1,
+      pointsPerCorrectAnswer: map['pointsPerCorrectAnswer'] ?? 1,
       enableTimePenalty: map['enableTimePenalty'] ?? true,
       enableWildcards: map['enableWildcards'] ?? false,
       teams: List<Team>.from((map['teams'] ?? []).map((x) => Team.fromMap(x))),
@@ -100,8 +100,8 @@ class GameSetupPage extends StatefulWidget {
 class _GameSetupPageState extends State<GameSetupPage> {
   String _refereeName = '';
   int _timePerQuestion = 30;
-  int _numberOfRounds = 3;
-  int _pointsPerCorrectAnswer = 10;
+  int _numberOfRounds = 1;
+  int _pointsPerCorrectAnswer = 1;
   bool _enableTimePenalty = true;
   bool _enableWildcards = false; // Changed from enablePowerUps to enableWildcards
   String? _selectedDifficultyFilter;
@@ -371,8 +371,8 @@ class _GameSetupPageState extends State<GameSetupPage> {
     setState(() {
       _refereeName = '';
       _timePerQuestion = 30;
-      _numberOfRounds = 3;
-      _pointsPerCorrectAnswer = 10;
+      _numberOfRounds = 1;
+      _pointsPerCorrectAnswer = 1;
       _enableTimePenalty = true;
       _enableWildcards = false;
       _selectedDifficultyFilter = null;
@@ -1024,7 +1024,7 @@ class _GameSetupPageState extends State<GameSetupPage> {
                               value: _numberOfRounds.toDouble(),
                               min: 1,
                               max: 50,
-                              divisions: 9,
+                              divisions: 50,
                               label: '$_numberOfRounds',
                               activeColor: Colors.yellow,
                               inactiveColor: Colors.white.withOpacity(0.3),
@@ -1068,9 +1068,9 @@ class _GameSetupPageState extends State<GameSetupPage> {
                             const SizedBox(height: 12),
                             Slider(
                               value: _pointsPerCorrectAnswer.toDouble(),
-                              min: 5,
+                              min: 1,
                               max: 50,
-                              divisions: 9,
+                              divisions: 50,
                               label: '$_pointsPerCorrectAnswer',
                               activeColor: Colors.yellow,
                               inactiveColor: Colors.white.withOpacity(0.3),

@@ -33,7 +33,7 @@ class Question {
       text: data['text'] ?? '',
       category: data['category'] ?? 'General',
       difficulty: data['difficulty'] ?? 'Medium',
-      points: (data['points'] ?? 10).toInt(),
+      points: 1, // Always 1 point per question
       timestamp: data['timestamp'] ?? Timestamp.now(),
       status: data['status'] ?? 'pending',
       questionNumber: (data['questionNumber'] ?? 0).toInt(),
@@ -66,7 +66,7 @@ class _GameplayPageState extends State<GameplayPage> {
   int _currentQuestionNumber = 1;
   Map<String, int> _teamScores = {};
   bool _isGameStarted = false;
-  bool _isQuestionVisible = false; // Changed from _isAnswerRevealed
+  bool _isQuestionVisible = false;
   int _timeLeft = 0;
   Timer? _timer;
   bool _isTimerRunning = false;
@@ -76,13 +76,18 @@ class _GameplayPageState extends State<GameplayPage> {
   Question? _currentQuestion;
   bool _isLoadingQuestions = true;
 
-  // Wildcards state for each team
+  // Wildcards state - track usage per round
   Map<String, Map<String, bool>> _teamWildcards = {};
-  Map<String, int> _teamWildcardUses = {};
+  Map<String, Map<String, bool>> _wildcardsUsedThisRound = {};
+  int _currentRoundWildcardUses = 0;
 
   // Timer control state
   int _baseTime = 0;
   bool _isTimeExtended = false;
+
+  // Modern score awarding
+  String? _selectedTeamForPoints;
+  bool _showAwardPanel = false;
 
   @override
   void initState() {
@@ -101,11 +106,11 @@ class _GameplayPageState extends State<GameplayPage> {
     for (var team in widget.gameConfig.teams) {
       _teamScores[team.name] = 0;
       _teamWildcards[team.name] = {...team.wildcards};
-      _teamWildcardUses[team.name] = 0;
+      _wildcardsUsedThisRound[team.name] = {};
     }
     _timeLeft = widget.gameConfig.timePerQuestion;
     _baseTime = widget.gameConfig.timePerQuestion;
-    _isQuestionVisible = false; // Start with question hidden
+    _isQuestionVisible = false;
   }
 
   Future<void> _loadQuestions() async {
@@ -176,7 +181,7 @@ class _GameplayPageState extends State<GameplayPage> {
         text: 'What is the capital of France?',
         category: 'Geography',
         difficulty: 'Easy',
-        points: 10,
+        points: 1, // Always 1 point
         timestamp: Timestamp.now(),
         status: 'approved',
         questionNumber: 1,
@@ -186,7 +191,7 @@ class _GameplayPageState extends State<GameplayPage> {
         text: 'Who painted the Mona Lisa?',
         category: 'Art',
         difficulty: 'Medium',
-        points: 15,
+        points: 1, // Always 1 point
         timestamp: Timestamp.now(),
         status: 'approved',
         questionNumber: 2,
@@ -196,7 +201,7 @@ class _GameplayPageState extends State<GameplayPage> {
         text: 'What is the chemical symbol for gold?',
         category: 'Science',
         difficulty: 'Easy',
-        points: 10,
+        points: 1, // Always 1 point
         timestamp: Timestamp.now(),
         status: 'approved',
         questionNumber: 3,
@@ -241,6 +246,12 @@ class _GameplayPageState extends State<GameplayPage> {
     _isTimerRunning = false;
     _isTimeExtended = false;
 
+    // Reset wildcard usage for new round
+    _currentRoundWildcardUses = 0;
+    for (var team in widget.gameConfig.teams) {
+      _wildcardsUsedThisRound[team.name]?.clear();
+    }
+
     if (_currentQuestion != null) {
       _usedQuestions.add(_currentQuestion!);
       _questions.removeWhere((q) => q.id == _currentQuestion!.id);
@@ -250,11 +261,15 @@ class _GameplayPageState extends State<GameplayPage> {
       setState(() {
         _currentQuestion = _questions.first;
         _currentQuestionNumber++;
-        _isQuestionVisible = false; // Reset question visibility for new question
+        _isQuestionVisible = false;
         _timeLeft = widget.gameConfig.timePerQuestion;
         _baseTime = widget.gameConfig.timePerQuestion;
-        if (_isGameStarted) {
-          _startTimer();
+        _showAwardPanel = false;
+        _selectedTeamForPoints = null;
+
+        // Reset wildcard states for new round
+        for (var team in widget.gameConfig.teams) {
+          _teamWildcards[team.name] = {...team.wildcards};
         }
       });
     } else {
@@ -263,6 +278,8 @@ class _GameplayPageState extends State<GameplayPage> {
   }
 
   void _startTimer() {
+    if (_isTimerRunning) return;
+
     _timer?.cancel();
     _isTimerRunning = true;
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -273,7 +290,6 @@ class _GameplayPageState extends State<GameplayPage> {
       } else {
         timer.cancel();
         _isTimerRunning = false;
-        // When time runs out, automatically show the question
         if (!_isQuestionVisible) {
           _toggleQuestionVisibility();
         }
@@ -281,15 +297,11 @@ class _GameplayPageState extends State<GameplayPage> {
     });
   }
 
-  void _pauseTimer() {
+  void _stopTimer() {
     _timer?.cancel();
-    _isTimerRunning = false;
-  }
-
-  void _resumeTimer() {
-    if (!_isTimerRunning && _timeLeft > 0) {
-      _startTimer();
-    }
+    setState(() {
+      _isTimerRunning = false;
+    });
   }
 
   void _resetTimer() {
@@ -309,12 +321,12 @@ class _GameplayPageState extends State<GameplayPage> {
 
   void _useUnlimitedTime(String teamName) {
     if (_teamWildcards[teamName]?['Unlimited Time'] == true &&
-        (_teamWildcardUses[teamName] ?? 0) < 1) {
+        !(_wildcardsUsedThisRound[teamName]?['Unlimited Time'] ?? false)) {
       setState(() {
-        _timer?.cancel();
-        _isTimerRunning = false;
+        _stopTimer();
         _teamWildcards[teamName]?['Unlimited Time'] = false;
-        _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+        _wildcardsUsedThisRound[teamName]?['Unlimited Time'] = true;
+        _currentRoundWildcardUses++;
       });
       _showSuccess('$teamName used Unlimited Time! Timer stopped.');
     }
@@ -322,11 +334,12 @@ class _GameplayPageState extends State<GameplayPage> {
 
   void _useExtraTime(String teamName) {
     if (_teamWildcards[teamName]?['Extra Time'] == true &&
-        (_teamWildcardUses[teamName] ?? 0) < 1) {
+        !(_wildcardsUsedThisRound[teamName]?['Extra Time'] ?? false)) {
       setState(() {
         _addExtraTime(20);
         _teamWildcards[teamName]?['Extra Time'] = false;
-        _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+        _wildcardsUsedThisRound[teamName]?['Extra Time'] = true;
+        _currentRoundWildcardUses++;
       });
       _showSuccess('$teamName used Extra Time! +20 seconds added.');
     }
@@ -334,21 +347,21 @@ class _GameplayPageState extends State<GameplayPage> {
 
   void _useTheif(String teamName) {
     if (_teamWildcards[teamName]?['Theif'] == true &&
-        (_teamWildcardUses[teamName] ?? 0) < 1) {
+        !(_wildcardsUsedThisRound[teamName]?['Theif'] ?? false)) {
       _showTheifDialog(teamName);
     }
   }
 
   void _usePlusMinus(String teamName) {
     if (_teamWildcards[teamName]?['Plus Minus'] == true &&
-        (_teamWildcardUses[teamName] ?? 0) < 1) {
+        !(_wildcardsUsedThisRound[teamName]?['Plus Minus'] ?? false)) {
       _showPlusMinusDialog(teamName);
     }
   }
 
   void _useTables(String teamName) {
     if (_teamWildcards[teamName]?['Tables'] == true &&
-        (_teamWildcardUses[teamName] ?? 0) < 1) {
+        !(_wildcardsUsedThisRound[teamName]?['Tables'] ?? false)) {
       _showTablesDialog(teamName);
     }
   }
@@ -369,8 +382,11 @@ class _GameplayPageState extends State<GameplayPage> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              _teamWildcards[teamName]?['Theif'] = false;
-              _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+              setState(() {
+                _teamWildcards[teamName]?['Theif'] = false;
+                _wildcardsUsedThisRound[teamName]?['Theif'] = true;
+                _currentRoundWildcardUses++;
+              });
               _showStealPointsDialog(teamName);
             },
             child: const Text('Use', style: TextStyle(color: Colors.black)),
@@ -440,11 +456,11 @@ class _GameplayPageState extends State<GameplayPage> {
                   child: Text(team.name, style: const TextStyle(color: Colors.white)),
                 ),
                 IconButton(
-                  onPressed: () => _adjustPoints(team.name, 10),
+                  onPressed: () => _adjustPoints(team.name, 1),
                   icon: const Icon(Icons.add, color: Colors.green),
                 ),
                 IconButton(
-                  onPressed: () => _adjustPoints(team.name, -10),
+                  onPressed: () => _adjustPoints(team.name, -1),
                   icon: const Icon(Icons.remove, color: Colors.red),
                 ),
               ],
@@ -455,8 +471,11 @@ class _GameplayPageState extends State<GameplayPage> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              _teamWildcards[teamName]?['Plus Minus'] = false;
-              _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+              setState(() {
+                _teamWildcards[teamName]?['Plus Minus'] = false;
+                _wildcardsUsedThisRound[teamName]?['Plus Minus'] = true;
+                _currentRoundWildcardUses++;
+              });
             },
             child: const Text('Done', style: TextStyle(color: Colors.yellow)),
           ),
@@ -483,8 +502,11 @@ class _GameplayPageState extends State<GameplayPage> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              _teamWildcards[teamName]?['Tables'] = false;
-              _teamWildcardUses[teamName] = (_teamWildcardUses[teamName] ?? 0) + 1;
+              setState(() {
+                _teamWildcards[teamName]?['Tables'] = false;
+                _wildcardsUsedThisRound[teamName]?['Tables'] = true;
+                _currentRoundWildcardUses++;
+              });
               _showSuccess('$teamName activated Tables wildcard!');
             },
             child: const Text('OK', style: TextStyle(color: Colors.yellow)),
@@ -498,9 +520,7 @@ class _GameplayPageState extends State<GameplayPage> {
     setState(() {
       _isQuestionVisible = !_isQuestionVisible;
       if (_isQuestionVisible) {
-        _pauseTimer(); // Pause timer when question is revealed
-      } else {
-        _resumeTimer(); // Resume timer when question is hidden
+        _stopTimer();
       }
     });
   }
@@ -509,13 +529,16 @@ class _GameplayPageState extends State<GameplayPage> {
     final currentQuestion = _currentQuestion;
     if (currentQuestion == null) return;
 
-    int points = currentQuestion.points;
+    // Always award 1 point for correct answer
+    int points = 1;
 
     setState(() {
       if (isCorrect) {
         _teamScores[teamName] = (_teamScores[teamName] ?? 0) + points;
+        _showSuccess('$teamName earned $points point!');
       } else if (widget.gameConfig.enableTimePenalty) {
         _teamScores[teamName] = (_teamScores[teamName] ?? 0) - (points ~/ 2);
+        _showError('$teamName lost ${points ~/ 2} points!');
       }
     });
   }
@@ -528,7 +551,7 @@ class _GameplayPageState extends State<GameplayPage> {
 
     setState(() {
       _isGameStarted = true;
-      _startTimer();
+      // Don't auto-start timer
     });
   }
 
@@ -638,37 +661,43 @@ class _GameplayPageState extends State<GameplayPage> {
 
   Widget _buildWildcardButton(String teamName, String wildcardName, IconData icon, Function() onPressed) {
     final hasWildcard = _teamWildcards[teamName]?[wildcardName] == true;
-    final usesLeft = 1 - (_teamWildcardUses[teamName] ?? 0);
+    final isUsed = _wildcardsUsedThisRound[teamName]?[wildcardName] ?? false;
+    final canUse = hasWildcard && !isUsed;
 
     return Tooltip(
-      message: '$wildcardName\nUses left: $usesLeft',
+      message: '$wildcardName${isUsed ? ' (Used this round)' : canUse ? ' (Available)' : ' (Unavailable)'}',
       child: GestureDetector(
-        onTap: hasWildcard && usesLeft > 0 ? onPressed : null,
+        onTap: canUse ? onPressed : null,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: hasWildcard && usesLeft > 0
-                ? Colors.yellow.withOpacity(0.2)
+            color: canUse
+                ? Colors.yellow.withOpacity(0.3)
+                : isUsed
+                ? Colors.green.withOpacity(0.2)
                 : Colors.grey.withOpacity(0.1),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: hasWildcard && usesLeft > 0
+              color: canUse
                   ? Colors.yellow
+                  : isUsed
+                  ? Colors.green
                   : Colors.grey.withOpacity(0.3),
+              width: isUsed ? 2 : 1,
             ),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(icon,
-                  color: hasWildcard && usesLeft > 0 ? Colors.yellow : Colors.grey,
+                  color: canUse ? Colors.yellow : isUsed ? Colors.green : Colors.grey,
                   size: 16),
               const SizedBox(height: 2),
               Text(
                 wildcardName.split(' ').first,
                 style: TextStyle(
-                  color: hasWildcard && usesLeft > 0 ? Colors.yellow : Colors.grey,
+                  color: canUse ? Colors.yellow : isUsed ? Colors.green : Colors.grey,
                   fontSize: 8,
                   fontWeight: FontWeight.w600,
                 ),
@@ -678,6 +707,28 @@ class _GameplayPageState extends State<GameplayPage> {
         ),
       ),
     );
+  }
+
+  // Modern point awarding method
+  void _toggleAwardPanel(String teamName) {
+    setState(() {
+      if (_selectedTeamForPoints == teamName) {
+        _selectedTeamForPoints = null;
+        _showAwardPanel = false;
+      } else {
+        _selectedTeamForPoints = teamName;
+        _showAwardPanel = true;
+      }
+    });
+  }
+
+  void _awardPointsModern(String teamName, int points) {
+    setState(() {
+      _teamScores[teamName] = (_teamScores[teamName] ?? 0) + points;
+      _showSuccess('$teamName earned $points point${points != 1 ? 's' : ''}!');
+      _selectedTeamForPoints = null;
+      _showAwardPanel = false;
+    });
   }
 
   @override
@@ -844,51 +895,51 @@ class _GameplayPageState extends State<GameplayPage> {
                                 ),
                               ),
                               const SizedBox(height: 8),
-                              if (_isGameStarted)
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    IconButton(
-                                      onPressed: _isTimerRunning ? _pauseTimer : _resumeTimer,
-                                      icon: Icon(
-                                        _isTimerRunning ? Icons.pause : Icons.play_arrow,
-                                        color: Colors.white,
-                                        size: 20,
-                                      ),
-                                      style: IconButton.styleFrom(
-                                        backgroundColor: Colors.white.withOpacity(0.1),
-                                        padding: const EdgeInsets.all(6),
-                                      ),
+                              // Independent Timer Controls
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  IconButton(
+                                    onPressed: _isTimerRunning ? _stopTimer : _startTimer,
+                                    icon: Icon(
+                                      _isTimerRunning ? Icons.stop : Icons.play_arrow,
+                                      color: Colors.white,
+                                      size: 20,
                                     ),
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: Colors.white.withOpacity(0.1),
+                                      padding: const EdgeInsets.all(6),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    onPressed: _resetTimer,
+                                    icon: const Icon(Icons.refresh, color: Colors.white, size: 20),
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: Colors.white.withOpacity(0.1),
+                                      padding: const EdgeInsets.all(6),
+                                    ),
+                                  ),
+                                  if (_isTimeExtended)
                                     const SizedBox(width: 8),
-                                    IconButton(
-                                      onPressed: _resetTimer,
-                                      icon: const Icon(Icons.refresh, color: Colors.white, size: 20),
-                                      style: IconButton.styleFrom(
-                                        backgroundColor: Colors.white.withOpacity(0.1),
-                                        padding: const EdgeInsets.all(6),
+                                  if (_isTimeExtended)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.green.withOpacity(0.2),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: const Text(
+                                        '+20s',
+                                        style: TextStyle(
+                                          color: Colors.green,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
                                       ),
                                     ),
-                                    if (_isTimeExtended)
-                                      const SizedBox(width: 8),
-                                    if (_isTimeExtended)
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                        decoration: BoxDecoration(
-                                          color: Colors.green.withOpacity(0.2),
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                        child: const Text(
-                                          '+20s',
-                                          style: TextStyle(
-                                            color: Colors.green,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
+                                ],
+                              ),
                             ],
                           ),
                         ],
@@ -899,9 +950,11 @@ class _GameplayPageState extends State<GameplayPage> {
                         children: [
                           _buildStatItem(Icons.timer, 'Time', '${widget.gameConfig.timePerQuestion}s'),
                           const SizedBox(width: 12),
-                          _buildStatItem(Icons.score, 'Points', '${widget.gameConfig.pointsPerCorrectAnswer}'),
+                          _buildStatItem(Icons.score, 'Points', '1'), // Always 1 point per question
                           const SizedBox(width: 12),
                           _buildStatItem(Icons.groups, 'Teams', '${widget.gameConfig.teams.length}'),
+                          const SizedBox(width: 12),
+                          _buildStatItem(Icons.card_giftcard, 'Wildcards', '$_currentRoundWildcardUses'),
                         ],
                       ),
                     ],
@@ -941,9 +994,9 @@ class _GameplayPageState extends State<GameplayPage> {
                                 color: Colors.yellow.withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(12),
                               ),
-                              child: Text(
-                                '${_currentQuestion!.points} pts',
-                                style: const TextStyle(
+                              child: const Text(
+                                '1 pt', // Always 1 point
+                                style: TextStyle(
                                   color: Colors.yellow,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
@@ -983,7 +1036,6 @@ class _GameplayPageState extends State<GameplayPage> {
                           ),
                         )
                       else ...[
-                          // Question Display with Reveal/Hide functionality
                           GestureDetector(
                             onTap: _isGameStarted ? _toggleQuestionVisibility : null,
                             child: Container(
@@ -1074,7 +1126,7 @@ class _GameplayPageState extends State<GameplayPage> {
                 ),
                 const SizedBox(height: 20),
 
-                // Teams Scores Section
+                // Teams Scores Section with Modern Awarding
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(16),
@@ -1106,12 +1158,12 @@ class _GameplayPageState extends State<GameplayPage> {
                                 color: Colors.yellow.withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(8),
                               ),
-                              child: const Row(
+                              child: Row(
                                 children: [
                                   Icon(Icons.card_giftcard, color: Colors.yellow, size: 12),
                                   SizedBox(width: 4),
                                   Text(
-                                    'WILDCARDS',
+                                    '$_currentRoundWildcardUses/${widget.gameConfig.teams.length * 5}',
                                     style: TextStyle(
                                       color: Colors.yellow,
                                       fontSize: 10,
@@ -1124,60 +1176,160 @@ class _GameplayPageState extends State<GameplayPage> {
                         ],
                       ),
                       const SizedBox(height: 16),
-                      ...widget.gameConfig.teams.map((team) {
-                        final index = widget.gameConfig.teams.indexOf(team);
-                        final score = _teamScores[team.name] ?? 0;
-                        final color = teamColors[index % teamColors.length];
-                        final wildcards = _teamWildcards[team.name] ?? {};
-                        final usesLeft = 1 - (_teamWildcardUses[team.name] ?? 0);
 
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 12),
+                      // Modern Award Points Panel
+                      if (_showAwardPanel && _selectedTeamForPoints != null)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 16),
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.05),
+                            color: Colors.yellow.withOpacity(0.1),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: color.withOpacity(0.2)),
+                            border: Border.all(color: Colors.yellow),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
                                 children: [
-                                  Container(
-                                    width: 32,
-                                    height: 32,
-                                    decoration: BoxDecoration(
-                                      color: color.withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    alignment: Alignment.center,
-                                    child: Text(
-                                      '${index + 1}',
-                                      style: TextStyle(
-                                        color: color,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
-                                      ),
+                                  const Icon(Icons.star, color: Colors.yellow, size: 16),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Award points to $_selectedTeamForPoints',
+                                    style: const TextStyle(
+                                      color: Colors.yellow,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                  const Spacer(),
+                                  IconButton(
+                                    onPressed: () {
+                                      setState(() {
+                                        _selectedTeamForPoints = null;
+                                        _showAwardPanel = false;
+                                      });
+                                    },
+                                    icon: const Icon(Icons.close, color: Colors.yellow, size: 16),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                children: [
+                                  // Award 1 point for correct answer
+                                  ElevatedButton.icon(
+                                    onPressed: () => _awardPointsModern(_selectedTeamForPoints!, 1),
+                                    icon: const Icon(Icons.check, size: 16),
+                                    label: const Text('Correct (+1)'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    ),
+                                  ),
+                                  // Penalty option
+                                  ElevatedButton.icon(
+                                    onPressed: () => _awardPointsModern(_selectedTeamForPoints!, -1),
+                                    icon: const Icon(Icons.close, size: 16),
+                                    label: const Text('Wrong (-1)'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.red,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      ...widget.gameConfig.teams.map((team) {
+                        final index = widget.gameConfig.teams.indexOf(team);
+                        final score = _teamScores[team.name] ?? 0;
+                        final color = teamColors[index % teamColors.length];
+                        final wildcards = _teamWildcards[team.name] ?? {};
+                        final isSelected = _selectedTeamForPoints == team.name;
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? color.withOpacity(0.3)
+                                : Colors.white.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isSelected
+                                  ? color
+                                  : color.withOpacity(0.2),
+                              width: isSelected ? 2 : 1,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Team header with score
+                              GestureDetector(
+                                onTap: () => _toggleAwardPanel(team.name),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 32,
+                                      height: 32,
+                                      decoration: BoxDecoration(
+                                        color: color.withOpacity(0.1),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: Text(
+                                        '${index + 1}',
+                                        style: TextStyle(
+                                          color: color,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            team.name,
+                                            style: TextStyle(
+                                              color: color,
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          Text(
+                                            '${team.players.where((p) => p.isNotEmpty).length} players',
+                                            style: TextStyle(
+                                              color: Colors.white.withOpacity(0.6),
+                                              fontSize: 10,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.end,
                                       children: [
                                         Text(
-                                          team.name,
+                                          '$score',
                                           style: TextStyle(
-                                            color: color,
-                                            fontSize: 14,
+                                            color: Colors.white,
+                                            fontSize: 24,
                                             fontWeight: FontWeight.bold,
                                           ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
                                         ),
                                         Text(
-                                          '${team.players.where((p) => p.isNotEmpty).length} players',
+                                          'points',
                                           style: TextStyle(
                                             color: Colors.white.withOpacity(0.6),
                                             fontSize: 10,
@@ -1185,46 +1337,42 @@ class _GameplayPageState extends State<GameplayPage> {
                                         ),
                                       ],
                                     ),
-                                  ),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    const SizedBox(width: 12),
+                                    Icon(
+                                      isSelected ? Icons.expand_less : Icons.expand_more,
+                                      color: color,
+                                      size: 20,
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              // Wildcards section
+                              if (widget.gameConfig.enableWildcards)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 12),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      Text(
-                                        '$score',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 24,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      Text(
-                                        'points',
-                                        style: TextStyle(
-                                          color: Colors.white.withOpacity(0.6),
-                                          fontSize: 10,
-                                        ),
+                                      const Divider(color: Colors.white24),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                        children: [
+                                          _buildWildcardButton(team.name, 'Unlimited Time', Icons.timer_off,
+                                                  () => _useUnlimitedTime(team.name)),
+                                          _buildWildcardButton(team.name, 'Extra Time', Icons.timer,
+                                                  () => _useExtraTime(team.name)),
+                                          _buildWildcardButton(team.name, 'Theif', Icons.attach_money,
+                                                  () => _useTheif(team.name)),
+                                          _buildWildcardButton(team.name, 'Plus Minus', Icons.add_circle_outline,
+                                                  () => _usePlusMinus(team.name)),
+                                          _buildWildcardButton(team.name, 'Tables', Icons.table_chart,
+                                                  () => _useTables(team.name)),
+                                        ],
                                       ),
                                     ],
                                   ),
-                                ],
-                              ),
-                              if (widget.gameConfig.enableWildcards && usesLeft > 0)
-                                const SizedBox(height: 12),
-                              if (widget.gameConfig.enableWildcards && usesLeft > 0)
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                                  children: [
-                                    _buildWildcardButton(team.name, 'Unlimited Time', Icons.timer_off,
-                                            () => _useUnlimitedTime(team.name)),
-                                    _buildWildcardButton(team.name, 'Extra Time', Icons.timer,
-                                            () => _useExtraTime(team.name)),
-                                    _buildWildcardButton(team.name, 'Theif', Icons.attach_money,
-                                            () => _useTheif(team.name)),
-                                    _buildWildcardButton(team.name, 'Plus Minus', Icons.add_circle_outline,
-                                            () => _usePlusMinus(team.name)),
-                                    _buildWildcardButton(team.name, 'Tables', Icons.table_chart,
-                                            () => _useTables(team.name)),
-                                  ],
                                 ),
                             ],
                           ),
@@ -1252,72 +1400,7 @@ class _GameplayPageState extends State<GameplayPage> {
                   ),
 
                 if (_isGameStarted) ...[
-                  // Answer Control
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.white.withOpacity(0.1)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Award Points',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        ...widget.gameConfig.teams.map((team) {
-                          final index = widget.gameConfig.teams.indexOf(team);
-                          final color = teamColors[index % teamColors.length];
-
-                          return Container(
-                            margin: const EdgeInsets.only(bottom: 8),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    team.name,
-                                    style: TextStyle(color: color, fontSize: 14),
-                                  ),
-                                ),
-                                Row(
-                                  children: [
-                                    IconButton(
-                                      onPressed: () => _awardPoints(team.name, true),
-                                      icon: const Icon(Icons.check, color: Colors.green),
-                                      style: IconButton.styleFrom(
-                                        backgroundColor: Colors.green.withOpacity(0.1),
-                                        padding: const EdgeInsets.all(8),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    IconButton(
-                                      onPressed: () => _awardPoints(team.name, false),
-                                      icon: const Icon(Icons.close, color: Colors.red),
-                                      style: IconButton.styleFrom(
-                                        backgroundColor: Colors.red.withOpacity(0.1),
-                                        padding: const EdgeInsets.all(8),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // Navigation Buttons (Removed Reveal Answer button)
+                  // Navigation Buttons
                   Row(
                     children: [
                       Expanded(
